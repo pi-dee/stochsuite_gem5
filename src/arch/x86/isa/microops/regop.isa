@@ -1746,4 +1746,30 @@ let {{
             }
             cfofBits = cfofBits & ~(X86ISA::OFBit | X86ISA::CFBit);
         '''
+
+    class RdRandOp(BasicRegOp):
+        code = '''
+            static ::LCG lcg;
+            DestReg = merge(DestReg, dest, (uint64_t)lcg._read_random(), dataSize);
+        '''
+        flag_code = '''
+            cfofBits = cfofBits | X86ISA::CFBit;
+            cfofBits = cfofBits & ~X86ISA::OFBit;
+            ccFlagBits = ccFlagBits & ~(X86ISA::SFBit | X86ISA::AFBit |
+                    X86ISA::ZFBit | X86ISA::PFBit);
+        '''
+
+    class RdSeedOp(BasicRegOp):
+        code = '''
+            static ::LCG lcg;
+            uint32_t new_seed = (uint32_t)PSrcReg1;
+            lcg._seed_random(new_seed);
+            DestReg = merge(DestReg, dest, (uint64_t)new_seed, dataSize);
+        '''
+        flag_code = '''
+            cfofBits = cfofBits | X86ISA::CFBit;
+            cfofBits = cfofBits & ~X86ISA::OFBit;
+            ccFlagBits = ccFlagBits & ~(X86ISA::SFBit | X86ISA::AFBit |
+                    X86ISA::ZFBit | X86ISA::PFBit);
+        '''
 }};

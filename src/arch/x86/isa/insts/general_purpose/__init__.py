@@ -50,6 +50,7 @@ categories = [
     "semaphores",
     "string",
     "system_calls",
+    "random_number",
 ]
 
 microcode = """
