@@ -28,6 +28,8 @@ import argparse
 
 parser = argparse.ArgumentParser(description="Stochsuite GEM5 X86 SE Workload")
 parser.add_argument("--hwrng", type=str, default="Taus88", help="Hardware RNG type for RDRAND")
+parser.add_argument("--hwrng-lat", type=int, default=1, help="Latency for RDRAND operations")
+parser.add_argument("--rdseed-lat", type=int, default=1, help="Latency for RDSEED operations")
 # Allow passing unknown args to gem5
 args, _ = parser.parse_known_args()
 
@@ -90,6 +92,25 @@ memory = DualChannelDDR4_2400(size="3GiB")
 #    num_cores=1,
 # )
 processor = SimpleProcessor(cpu_type=CPUTypes.O3, num_cores=1, isa=ISA.X86)
+
+# Configure the latency of the HWRNG functional unit
+print("Configuring HWRNG latency...")
+for core in processor.get_cores():
+    # In gem5 library, 'core' is a wrapper. 'core.core' is the SimObject.
+    c = core.core
+    print(f"Checking core: {c.path() if hasattr(c, 'path') else c}")
+    if hasattr(c, 'instQueues'):
+        for iq in c.instQueues:
+            if hasattr(iq, 'fuPool'):
+                for fu in iq.fuPool.FUList:
+                    for op in fu.opList:
+                        if str(op.opClass) == 'RdRand':
+                            print(f"Found RdRand OpClass in {fu.path()}. Setting latency to {args.hwrng_lat}")
+                            op.opLat = args.hwrng_lat
+                        elif str(op.opClass) == 'RdSeed':
+                            print(f"Found RdSeed OpClass in {fu.path()}. Setting latency to {args.rdseed_lat}")
+                            op.opLat = args.rdseed_lat
+
 for core in processor.get_cores():
     # Setting the branch predictor on the SimObject
     core.branchPred = LocalBP(

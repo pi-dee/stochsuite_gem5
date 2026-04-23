@@ -147,6 +147,11 @@ class System_Unit(FUDesc):
     count = 1
 
 
+class HWRNG_Unit(FUDesc):
+    opList = [OpDesc(opClass="RdRand"), OpDesc(opClass="RdSeed")]
+    count = 1
+
+
 class PredALU(FUDesc):
     opList = [OpDesc(opClass="SimdPredAlu")]
     count = 1

@@ -59,6 +59,7 @@ class DefaultFUPool(FUPool):
         SIMD_Unit(),
         Matrix_Unit(),
         System_Unit(),
+        HWRNG_Unit(),
         PredALU(),
         WritePort(),
         RdWrPort(),

@@ -1748,6 +1748,7 @@ let {{
         '''
 
     class RdRandOp(BasicRegOp):
+        op_class = 'RdRandOpClass'
         code = '''
             auto* isa = static_cast<X86ISA::ISA*>(xc->tcBase()->getIsaPtr());
             DestReg = merge(DestReg, dest, (uint64_t)isa->getHwRng()->read_random(), dataSize);
@@ -1760,6 +1761,7 @@ let {{
         '''
 
     class RdSeedOp(BasicRegOp):
+        op_class = 'RdSeedOpClass'
         code = '''
             auto* isa = static_cast<X86ISA::ISA*>(xc->tcBase()->getIsaPtr());
             uint32_t new_seed = (uint32_t)PSrcReg1;

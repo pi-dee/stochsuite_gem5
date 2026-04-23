@@ -149,6 +149,8 @@ static const OpClass SimdBf16MultAccOp = enums::SimdBf16MultAcc;
 static const OpClass Bf16CvtOp = enums::Bf16Cvt;
 static const OpClass SimdDotProdOp = enums::SimdDotProd;
 static const OpClass SystemOp = enums::System;
+static const OpClass RdRandOpClass = enums::RdRand;
+static const OpClass RdSeedOpClass = enums::RdSeed;
 static const OpClass Num_OpClasses = enums::Num_OpClass;
 
 } // namespace gem5
