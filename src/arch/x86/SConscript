@@ -43,11 +43,12 @@ Import('*')
 if not env['CONF']['USE_X86_ISA']:
     Return()
 
+import glob
 # Add software RNG library
-env.Append(CPPPATH=[Dir('#/../../rngs/software')])
-Source('#/../../rngs/software/LCG.cpp', tags=['x86 isa'])
-Source('#/../../rngs/software/RandomNumberGenerator.cpp', tags=['x86 isa'])
-Source('#/../../rngs/software/RNGState.cpp', tags=['x86 isa'])
+rng_dir = '/home/pgupta58/work/stochsuite_gem5/stochsuite/rngs/software'
+env.Append(CPPPATH=[Dir(rng_dir)])
+for f in glob.glob(f'{rng_dir}/*.cpp'):
+    Source(f, tags=['x86 isa'])
 
 env.TagImplies('x86 isa', 'gem5 lib')
 

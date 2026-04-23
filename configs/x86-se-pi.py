@@ -22,7 +22,17 @@ from m5.objects import (
     TAGE,
     LocalBP,
     TournamentBP,
+    X86ISA,
 )
+import argparse
+
+parser = argparse.ArgumentParser(description="Stochsuite GEM5 X86 SE Workload")
+parser.add_argument("--hwrng", type=str, default="Taus88", help="Hardware RNG type for RDRAND")
+# Allow passing unknown args to gem5
+args, _ = parser.parse_known_args()
+
+# Update the default parameter for all future X86ISA instances in this run
+X86ISA.hwrng_type = args.hwrng
 
 from gem5.coherence_protocol import CoherenceProtocol
 from gem5.components.boards.x86_board import X86Board
@@ -102,7 +112,7 @@ board = X86Board(
 
 board.set_se_binary_workload(
     binary=BinaryResource(
-        local_path="/home/selagamsetty/private/stochsuite/apps/pi.o"
+        local_path="/home/pgupta58/work/stochsuite_gem5/stochsuite/apps/pi.o"
     ),
     #        arguments=["-iters", "1000"])
     arguments=["-rng", "HWRNG", "-iters", "1000"],

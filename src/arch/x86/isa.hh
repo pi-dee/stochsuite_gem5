@@ -41,6 +41,8 @@
 #include "arch/x86/regs/misc.hh"
 #include "base/types.hh"
 #include "cpu/reg_class.hh"
+#include "RandomNumberGenerator.hpp"
+#include <memory>
 
 namespace gem5
 {
@@ -96,6 +98,9 @@ class ISA : public BaseISA
     std::string getVendorString() const;
 
     std::unique_ptr<X86CPUID> cpuid;
+
+    std::unique_ptr<RNGBase> hwrng;
+    RNGBase* getHwRng() const { return hwrng.get(); }
 };
 
 } // namespace X86ISA

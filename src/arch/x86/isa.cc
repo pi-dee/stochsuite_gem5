@@ -27,6 +27,7 @@
  */
 
 #include "arch/x86/isa.hh"
+#include "RNGFactory.hpp"
 
 #include "arch/x86/decoder.hh"
 #include "arch/x86/mmu.hh"
@@ -159,6 +160,9 @@ RegClass matRegClass(MatRegClass, MatRegClassName, 0, debug::MatRegs);
 ISA::ISA(const X86ISAParams &p)
     : BaseISA(p, "x86"), cpuid(new X86CPUID(p.vendor_string, p.name_string))
 {
+    hwrng = RNGFactory::createRNG(p.hwrng_type);
+    panic_if(!hwrng, "Invalid HWRNG type specified: %s", p.hwrng_type);
+
     cpuid->addStandardFunc(FamilyModelStepping, p.FamilyModelStepping);
     cpuid->addStandardFunc(CacheParams, p.CacheParams);
     cpuid->addStandardFunc(ExtendedFeatures, p.ExtendedFeatures);

@@ -57,6 +57,9 @@ class X86ISA(BaseISA):
     name_string = Param.String(
         "Fake gem5 x86_64 CPU", "Processor name for CPUID instruction"
     )
+    hwrng_type = Param.String(
+        "Taus88", "Hardware RNG type for RDRAND/RDSEED instructions"
+    )
 
     # For the functions that return numerical values we use a vector of ints.
     # The order of the values is: EAX, EBX, EDX, ECX.
