@@ -94,7 +94,8 @@ def main():
         return
 
     # Plotting logic
-    plt.figure(figsize=(20, 7))
+    labelFontSize = 26
+    plt.figure(figsize=(17, 7))
     bars = plt.bar(
         plot_labels,
         speedup_values,
@@ -106,14 +107,17 @@ def main():
     plt.ylim(0.8, 1.4)
 
     # Labeling and Formatting
-    plt.ylabel("Relative Speedup ($Ticks_{SW} / Ticks_{HW}$)", fontsize=16)
-    plt.xlabel("PRNG Strategy", fontsize=16)
+    plt.ylabel(
+        "Relative Speedup\n($Ticks_{SW} / Ticks_{HW}$)", fontsize=labelFontSize
+    )
+    plt.xlabel("PRNG Strategy", fontsize=labelFontSize)
     plt.title(
         "Hardware Acceleration Speedup per PRNG Strategy",
-        fontsize=18,
+        fontsize=labelFontSize + 2,
         fontweight="bold",
     )
-    plt.xticks(rotation=45, ha="right", fontsize=16)
+    plt.xticks(rotation=45, ha="right", fontsize=labelFontSize)
+    plt.yticks(fontsize=labelFontSize)
     plt.grid(axis="y", linestyle="--", alpha=0.6, zorder=0)
 
     # Add data labels on top of each bar
@@ -121,11 +125,11 @@ def main():
         height = bar.get_height()
         plt.text(
             bar.get_x() + bar.get_width() / 2.0,
-            height + 0.02,
+            height + 0.001,
             f"{height:.2f}x",
             ha="center",
             va="bottom",
-            fontsize=10,
+            fontsize=labelFontSize,
         )
 
     plt.tight_layout()
