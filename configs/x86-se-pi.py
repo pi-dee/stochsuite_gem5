@@ -21,21 +21,6 @@ from m5.objects import (
 
 parser = argparse.ArgumentParser(description="Stochsuite GEM5 X86 SE Workload")
 parser.add_argument(
-    "--hwrng", type=str, default="Taus88", help="Hardware RNG type for RDRAND"
-)
-parser.add_argument(
-    "--hwrng-lat", type=int, default=1, help="Latency for RDRAND operations"
-)
-parser.add_argument(
-    "--rdseed-lat", type=int, default=1, help="Latency for RDSEED operations"
-)
-parser.add_argument(
-    "--harden_prng",
-    action="store_true",
-    dest="use_hwrng",
-    help="Flag to enable using gem5 RDRAND during simulation.",
-)
-parser.add_argument(
     "--stochsuite-home",
     type=str,
     default=os.getenv(
@@ -44,14 +29,45 @@ parser.add_argument(
     help="Top level directory for stochsuite project",
 )
 parser.add_argument(
-    "--app", type=str, default="pi.o", help="Application to run"
+    "--harden-prng",
+    action="store_true",
+    dest="use_hwrng",
+    help="Flag to enable using gem5 RDRAND during simulation.",
+)
+parser.add_argument(
+    "--prng-select",
+    type=str,
+    default="Taus88",
+    help="""The PRNG to use. When harden-prng is used, this is the genertor that
+          implements the backed for when rdrand is called by the application to
+          model a hardwre implementation of the PRNG. When hard-prng is unset,
+          the PRNG is modelled entirely in software and considered as part of the
+          application. Options are: Taus88, Taus113, JKISS, JKISS32, CONG,
+          GLIBC_CRAND, DRAND48, MersenneTwister, KISS11, PCGBasic, XorShift32,
+          XorShift128, XorWow, XoShiRo128++.""",
+)
+parser.add_argument(
+    "--hwrng-lat",
+    type=int,
+    default=1,
+    help="Latency for RDRAND operations. Unused if harden-prng is not used.",
+)
+parser.add_argument(
+    "--rdseed-lat", type=int, default=1, help="Latency for RDSEED operations"
+)
+parser.add_argument(
+    "--app",
+    type=str,
+    default="pi.o",
+    help="""Application binary to run. Options are: pi.o, dop.o, dropout.o,
+          multinomial.o, photon.o, and tailwag.o""",
 )
 
 # Allow passing unknown args to gem5
 args, _ = parser.parse_known_args()
 
 # Update the default parameter for all future X86ISA instances in this run
-X86ISA.hwrng_type = args.hwrng
+X86ISA.hwrng_type = args.prng_select
 
 from gem5.coherence_protocol import CoherenceProtocol
 from gem5.components.boards.x86_board import X86Board
@@ -153,10 +169,14 @@ board = X86Board(
 
 
 app_path = Path(args.stochsuite_home).joinpath("apps", args.app)
+app_rng_opt = args.prng_select
+if args.use_hwrng:
+    app_rng_opt = "HWRNG"
+
 board.set_se_binary_workload(
-    binary=BinaryResource(local_path=app_path),
+    binary=BinaryResource(local_path=str(app_path)),
     #        arguments=["-iters", "1000"])
-    arguments=["-rng", "HWRNG", "-iters", "10"],
+    arguments=["-rng", app_rng_opt, "-iters", "100"],
 )
 
 # Initialize the simulator with the handlers
