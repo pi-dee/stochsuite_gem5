@@ -62,6 +62,12 @@ parser.add_argument(
     help="""Application binary to run. Options are: pi.o, dop.o, dropout.o,
           multinomial.o, photon.o, and tailwag.o""",
 )
+parser.add_argument(
+    "--app-iters",
+    type=int,
+    default=100,
+    help="Number of iterations to run on applicaiton.",
+)
 
 # Allow passing unknown args to gem5
 args, _ = parser.parse_known_args()
@@ -176,7 +182,7 @@ if args.use_hwrng:
 board.set_se_binary_workload(
     binary=BinaryResource(local_path=str(app_path)),
     #        arguments=["-iters", "1000"])
-    arguments=["-rng", app_rng_opt, "-iters", "100"],
+    arguments=["-rng", app_rng_opt, "-iters", str(args.app_iters)],
 )
 
 # Initialize the simulator with the handlers
