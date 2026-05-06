@@ -115,6 +115,8 @@ style_ignores = [
     # Ignore external projects as they are unlikely to follow the gem5
     # coding convention.
     _re_ignore("^ext/"),
+    # Stochsuite benchmarks live alongside gem5 but follow their own style.
+    _re_ignore("^stochsuite/"),
     # Ignore test data, as they are not code
     _re_ignore("^tests/(?:quick|long)/"),
     _re_ignore("^tests/test-progs/hello/bin/"),

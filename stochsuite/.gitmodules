@@ -1,0 +1,7 @@
+[submodule "rngs/hardware/XilinxUnisimLibrary"]
+	path = rngs/hardware/XilinxUnisimLibrary
+	url = https://github.com/Xilinx/XilinxUnisimLibrary
+[submodule "gem5_sim/gem5"]
+	path = gem5_sim/gem5
+	url = https://github.com/BujSet/gem5.git
+	branch = stochsuite

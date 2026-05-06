@@ -1,0 +1,25 @@
+# Large FS images — obtain locally (see README); do not commit.
+disk_images/*.img
+
+rngs/software/*.o
+apps/*.o
+apps/util/*.o
+apps/*.ppm
+apps/*.bin
+apps/*.hex
+apps/*_results.txt
+apps/*_results.csv
+apps/sim.logcd
+apps/sim.logpwd
+.vscode/
+.DS_Store
+rngs/hardware/*.vcd
+rngs/hardware/*-sim.log
+rngs/hardware/*-synth*.log
+rngs/hardware/*-gatesim.log
+rngs/hardware/*-sim
+rngs/hardware/*-gatesim
+rngs/hardware/*.netlist.v
+rngs/hardware/*.lib
+rngs/hardware/*.bin
+rngs/hardware/*.hex
