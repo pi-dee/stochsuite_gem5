@@ -45,7 +45,7 @@ if not env['CONF']['USE_X86_ISA']:
 
 import glob
 # Add software RNG library
-rng_dir = '/home/pgupta58/work/stochsuite_gem5/stochsuite/rngs/software'
+rng_dir = Dir('#stochsuite/rngs/software').abspath
 env.Append(CPPPATH=[Dir(rng_dir)])
 for f in glob.glob(f'{rng_dir}/*.cpp'):
     Source(f, tags=['x86 isa'])

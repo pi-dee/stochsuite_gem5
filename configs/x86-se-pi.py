@@ -18,18 +18,25 @@ scons build/ALL/gem5.opt
 ```
 """
 
-from m5.objects import (
-    TAGE,
-    LocalBP,
-    TournamentBP,
-    X86ISA,
-)
 import argparse
 
+from m5.objects import (
+    TAGE,
+    X86ISA,
+    LocalBP,
+    TournamentBP,
+)
+
 parser = argparse.ArgumentParser(description="Stochsuite GEM5 X86 SE Workload")
-parser.add_argument("--hwrng", type=str, default="Taus88", help="Hardware RNG type for RDRAND")
-parser.add_argument("--hwrng-lat", type=int, default=1, help="Latency for RDRAND operations")
-parser.add_argument("--rdseed-lat", type=int, default=1, help="Latency for RDSEED operations")
+parser.add_argument(
+    "--hwrng", type=str, default="Taus88", help="Hardware RNG type for RDRAND"
+)
+parser.add_argument(
+    "--hwrng-lat", type=int, default=1, help="Latency for RDRAND operations"
+)
+parser.add_argument(
+    "--rdseed-lat", type=int, default=1, help="Latency for RDSEED operations"
+)
 # Allow passing unknown args to gem5
 args, _ = parser.parse_known_args()
 
@@ -99,16 +106,20 @@ for core in processor.get_cores():
     # In gem5 library, 'core' is a wrapper. 'core.core' is the SimObject.
     c = core.core
     print(f"Checking core: {c.path() if hasattr(c, 'path') else c}")
-    if hasattr(c, 'instQueues'):
+    if hasattr(c, "instQueues"):
         for iq in c.instQueues:
-            if hasattr(iq, 'fuPool'):
+            if hasattr(iq, "fuPool"):
                 for fu in iq.fuPool.FUList:
                     for op in fu.opList:
-                        if str(op.opClass) == 'RdRand':
-                            print(f"Found RdRand OpClass in {fu.path()}. Setting latency to {args.hwrng_lat}")
+                        if str(op.opClass) == "RdRand":
+                            print(
+                                f"Found RdRand OpClass in {fu.path()}. Setting latency to {args.hwrng_lat}"
+                            )
                             op.opLat = args.hwrng_lat
-                        elif str(op.opClass) == 'RdSeed':
-                            print(f"Found RdSeed OpClass in {fu.path()}. Setting latency to {args.rdseed_lat}")
+                        elif str(op.opClass) == "RdSeed":
+                            print(
+                                f"Found RdSeed OpClass in {fu.path()}. Setting latency to {args.rdseed_lat}"
+                            )
                             op.opLat = args.rdseed_lat
 
 for core in processor.get_cores():
@@ -133,7 +144,7 @@ board = X86Board(
 
 board.set_se_binary_workload(
     binary=BinaryResource(
-        local_path="/home/pgupta58/work/stochsuite_gem5/stochsuite/apps/pi.o"
+        local_path="/home/pgupta58/work/stochsuite_gem5/gem5/stochsuite/apps/pi.o"
     ),
     #        arguments=["-iters", "1000"])
     arguments=["-rng", "HWRNG", "-iters", "1000"],
