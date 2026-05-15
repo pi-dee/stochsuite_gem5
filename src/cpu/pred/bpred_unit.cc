@@ -80,6 +80,8 @@ BPredUnit::regProbePoints()
 {
     ppBranches = pmuProbePoint("Branches");
     ppMisses = pmuProbePoint("Misses");
+    ppBranchAddrPC = new ProbePointArg<Addr>(getProbeManager(), "BranchPC");
+    ppMissAddrPC   = new ProbePointArg<Addr>(getProbeManager(), "MissPC");
 }
 
 void
@@ -134,6 +136,7 @@ BPredUnit::predict(const StaticInstPtr &inst, const InstSeqNum &seqNum,
 
     stats.lookups[tid][brType]++;
     ppBranches->notify(1);
+    ppBranchAddrPC->notify(pc.instAddr());
 
 
     /* -----------------------------------------------
@@ -367,6 +370,7 @@ BPredUnit::commitBranch(ThreadID tid, PredictorHistory* &hist)
         }
         ++stats.condIncorrect;
         ppMisses->notify(1);
+        ppMissAddrPC->notify(hist->pc);
     }
 
 

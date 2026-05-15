@@ -1,0 +1,7 @@
+# -*- mode:python -*-
+
+Import('*')
+
+SimObject('StochBranchMonitor.py', sim_objects=['StochBranchMonitor'])
+Source('stoch_branch_monitor.cc')
+DebugFlag('StochBranchMonitor')

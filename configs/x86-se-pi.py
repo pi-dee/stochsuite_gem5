@@ -1,33 +1,60 @@
 """
-This script utilizes the X86DemoBoard to run a simple Ubuntu boot. The script
-will boot the the OS to login before exiting the simulation.
+Syscall-emulation gem5 driver for Stochsuite workloads.
 
-A detailed terminal output can be found in `m5out/board.pc.com_1.device`.
-
-**Warning:** The X86DemoBoard uses the Timing CPU. The boot may take
-considerable time to complete execution.
-`configs/example/gem5_library/x86-ubuntu-run-with-kvm.py` can be referenced as
-an example of booting Ubuntu with a KVM CPU.
+Runs a stochsuite SE binary on an O3 CPU with a StochBranchMonitor attached
+to the branch predictor so per-stochastic-branch predict/mispredict statistics
+appear in stats.txt.
 
 Usage
 -----
-
 ```
 scons build/ALL/gem5.opt
-./build/ALL/gem5.opt configs/x86-se-stochsuite-workloads.py
+./build/ALL/gem5.opt \
+    configs/x86-se-pi.py \
+    --benchmark pi --iters 1000 --rng HWRNG
 ```
 """
 
 import argparse
+import os
 
 from m5.objects import (
     TAGE,
     X86ISA,
+    BranchPredictor,
     LocalBP,
     TournamentBP,
 )
+from m5.objects.StochBranchMonitor import StochBranchMonitor
 
-parser = argparse.ArgumentParser(description="Stochsuite GEM5 X86 SE Workload")
+WORKLOADS = ["pi", "dop", "dropout", "multinomial", "photon", "tailwag"]
+
+parser = argparse.ArgumentParser(
+    description="Syscall-emulation simulation of a stochsuite workload."
+)
+parser.add_argument(
+    "--benchmark",
+    required=True,
+    choices=WORKLOADS,
+    help="Stochsuite workload binary to run (apps/<name>_se).",
+)
+parser.add_argument(
+    "--iters",
+    type=int,
+    default=100000,
+    help="Number of iterations passed to the workload's `-iters` flag.",
+)
+parser.add_argument(
+    "--rng",
+    default="Taus88",
+    help="RNG class name passed to the workload's `-rng` flag.",
+)
+parser.add_argument(
+    "--seed",
+    type=int,
+    default=12312332,
+    help="Seed passed to the workload's `-seed` flag.",
+)
 parser.add_argument(
     "--hwrng", type=str, default="Taus88", help="Hardware RNG type for RDRAND"
 )
@@ -122,10 +149,29 @@ for core in processor.get_cores():
                             )
                             op.opLat = args.rdseed_lat
 
+_stochsuite_home = os.environ.get(
+    "STOCHSUITE_HOME",
+    os.path.join(os.path.dirname(__file__), "../stochsuite"),
+)
+_se_binary = os.path.join(
+    _stochsuite_home, "apps", f"{args.benchmark}_se"
+)
+_stripped_binary = os.path.join(
+    _stochsuite_home, "apps", f"{args.benchmark}_se.stripped"
+)
+
 for core in processor.get_cores():
-    # Setting the branch predictor on the SimObject
-    core.branchPred = LocalBP(
-        numThreads=1, instShiftAmt=2, speculativeHistUpdate=False
+    # O3 branchPred must be BranchPredictor (BPredUnit), not a raw ConditionalPredictor.
+    bp = BranchPredictor(
+        conditionalBranchPred=LocalBP(numThreads=1),
+        instShiftAmt=0,
+        speculativeHistUpdate=False,
+    )
+    # StochBranchMonitor must be a sibling of branchPred on the CPU SimObject
+    # (not a probe_listeners child of the BP) to avoid a config-hierarchy cycle.
+    core.core.branchPred = bp
+    core.core.stoch_branch_monitor = StochBranchMonitor(
+        binary=_stripped_binary, bpred=bp
     )
 # core.branchPred = TAGE(numThreads=1, instShiftAmt=2,
 #            speculativeHistUpdate=False,
@@ -143,14 +189,21 @@ board = X86Board(
 
 
 board.set_se_binary_workload(
-    binary=BinaryResource(
-        local_path="/home/pgupta58/work/stochsuite_gem5/gem5/stochsuite/apps/pi.o"
-    ),
-    #        arguments=["-iters", "1000"])
-    arguments=["-rng", "HWRNG", "-iters", "1000"],
+    binary=BinaryResource(local_path=_se_binary),
+    arguments=[
+        "-seed",
+        str(args.seed),
+        "-iters",
+        str(args.iters),
+        "-rng",
+        args.rng,
+    ],
 )
 
-# Initialize the simulator with the handlers
 simulator = Simulator(board=board)
 
+print(
+    f"Running stochsuite/{args.benchmark}_se with "
+    f"iters={args.iters} rng={args.rng} seed={args.seed}"
+)
 simulator.run()

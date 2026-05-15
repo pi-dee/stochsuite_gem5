@@ -43,6 +43,7 @@ from m5.objects.BaseCPU import BaseCPU
 
 # from m5.objects.O3Checker import O3Checker
 from m5.objects.BranchPredictor import *
+from m5.objects.StochBranchMonitor import StochBranchMonitor
 from m5.objects.FUPool import *
 from m5.objects.IndexingPolicies import *
 from m5.objects.IQUnit import *
@@ -205,6 +206,17 @@ class BaseO3CPU(BaseCPU):
         ),
         "Branch Predictor",
     )
+
+    # Optional per-branch stochastic monitor.  Must be defined AFTER
+    # branchPred so that the Python hierarchy builder instantiates branchPred
+    # first — the monitor references branchPred via its bpred param and the
+    # alphabetical order (b < s) guarantees branchPred's C++ object is fully
+    # constructed before the monitor attempts to access it, avoiding a
+    # configuration-hierarchy cycle.
+    stoch_branch_monitor = Param.StochBranchMonitor(
+        NULL, "Optional stochastic branch monitor for RNG-impacted branches"
+    )
+
     needsTSO = Param.Bool(False, "Enable TSO Memory model")
 
     recvRespThrottling = Param.Bool(

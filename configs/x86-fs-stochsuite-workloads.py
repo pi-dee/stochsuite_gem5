@@ -5,6 +5,10 @@ Boots Ubuntu 24.04 with a KVM CPU, then switches to the O3 CPU at the
 start of the ROI (m5_work_begin_addr), resets stats, runs the benchmark,
 dumps stats at the end of the ROI (m5_work_end_addr), and exits cleanly.
 
+A StochBranchMonitor is attached to the O3 branch predictor so that
+per-stochastic-branch predict/mispredict statistics appear in stats.txt
+under the branch predictor group (probe_listeners0.<symbol>).
+
 Usage
 -----
 ```
@@ -13,18 +17,28 @@ scons build/ALL/gem5.opt
     configs/x86-fs-stochsuite-workloads.py \
     --benchmark pi --iters 1000 \
     --disk-image /path/to/stochsuite-base.img
+
+./build/ALL/gem5.opt \
+    configs/x86-fs-stochsuite-workloads.py --list-bp-types
+
+# Classic caches + StridePrefetcher on L1D (build/X86/gem5.opt is enough):
+./build/ALL/gem5.opt \
+    configs/x86-fs-stochsuite-workloads.py \
+    --mem-system classic --l1d-hwp-type StridePrefetcher \
+    --benchmark pi --iters 1000 \
+    --disk-image /path/to/stochsuite-base.img
 ```
 """
 
 import argparse
+import os
+import sys
 
 import m5
+import m5.objects
 
 from gem5.coherence_protocol import CoherenceProtocol
 from gem5.components.boards.x86_board import X86Board
-from gem5.components.cachehierarchies.ruby.mesi_two_level_cache_hierarchy import (
-    MESITwoLevelCacheHierarchy,
-)
 from gem5.components.memory import DualChannelDDR4_2400
 from gem5.components.processors.cpu_types import CPUTypes
 from gem5.components.processors.simple_switchable_processor import (
@@ -38,17 +52,74 @@ from gem5.resources.resource import (
 from gem5.simulate.exit_event import ExitEvent
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
+from common.ObjectList import ObjectList
+from m5.objects import BranchPredictor, NULL
+from m5.objects.StochBranchMonitor import StochBranchMonitor
 
-requires(
-    coherence_protocol_required=CoherenceProtocol.MESI_TWO_LEVEL,
-    kvm_required=True,
+conditional_bp_list = ObjectList(
+    getattr(m5.objects, "ConditionalPredictor", None)
 )
+hwp_list = ObjectList(getattr(m5.objects, "BasePrefetcher", None))
+ruby_prefetcher_list = ObjectList(
+    getattr(m5.objects, "RubyPrefetcher", None)
+)
+
+PREFETCHER_NONE = "none"
+HWP_NONE = "none"
+# "Prefetcher" is a deprecated alias for RubyPrefetcher.
+_RUBY_PREFETCHER_TYPES = [
+    n for n in ruby_prefetcher_list.get_names() if n != "Prefetcher"
+]
+_HWP_CHOICES = [HWP_NONE] + hwp_list.get_names()
+
+_L1D_SIZE = "32KiB"
+_L1I_SIZE = "32KiB"
+_L2_SIZE = "256KiB"
+_L1_ASSOC = 8
+_L2_ASSOC = 16
+_NUM_L2_BANKS = 2
+
+
+class ListBp(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        conditional_bp_list.print()
+        sys.exit(0)
+
+
+class ListHwp(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        print("Available classic hardware prefetcher types (--mem-system classic):")
+        hwp_list.print()
+        print(f"\t{HWP_NONE} (disable prefetch on that cache)")
+        sys.exit(0)
+
+
+class ListRubyPrefetcher(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        print("Available Ruby L1 prefetcher types (--mem-system ruby):")
+        for name in _RUBY_PREFETCHER_TYPES:
+            print(f"\t{name}")
+        print(
+            f"\nUse --prefetcher-type {_RUBY_PREFETCHER_TYPES[0]} to enable, "
+            f"or --prefetcher-type {PREFETCHER_NONE} (default) to disable."
+        )
+        sys.exit(0)
+
 
 WORKLOADS = ["pi", "dop", "dropout", "multinomial", "photon", "tailwag"]
 DEFAULT_KERNEL = "x86-linux-kernel-6.8.0-52-generic"
 
 parser = argparse.ArgumentParser(
     description="Full-system simulation of a stochsuite workload."
+)
+parser.add_argument(
+    "--mem-system",
+    choices=("ruby", "classic"),
+    default="ruby",
+    help=(
+        "Memory/cache model: 'ruby' (MESI two-level, default) or 'classic' "
+        "(private L1, shared L2, MMU walk caches; supports --l1d-hwp-type)."
+    ),
 )
 parser.add_argument(
     "--benchmark",
@@ -104,40 +175,161 @@ parser.add_argument(
     default=DEFAULT_KERNEL,
     help="gem5 resource id (or local path) for the x86 Linux kernel.",
 )
+parser.add_argument(
+    "--list-bp-types",
+    action=ListBp,
+    nargs=0,
+    help="List available conditional branch predictor types and exit.",
+)
+parser.add_argument(
+    "--bp-type",
+    default="LocalBP",
+    choices=conditional_bp_list.get_names(),
+    help=(
+        "Conditional branch predictor for the O3 CPU (wrapped in "
+        "BranchPredictor). Default: LocalBP."
+    ),
+)
+parser.add_argument(
+    "--list-hwp-types",
+    action=ListHwp,
+    nargs=0,
+    help="List classic hardware prefetcher types (--mem-system classic) and exit.",
+)
+parser.add_argument(
+    "--list-prefetcher-types",
+    action=ListRubyPrefetcher,
+    nargs=0,
+    help="List Ruby L1 prefetcher types (--mem-system ruby) and exit.",
+)
+parser.add_argument(
+    "--prefetcher-type",
+    default=PREFETCHER_NONE,
+    choices=[PREFETCHER_NONE] + _RUBY_PREFETCHER_TYPES,
+    help=(
+        "Ruby only: L1 data prefetcher when --mem-system ruby. "
+        f"'{PREFETCHER_NONE}' disables (default). "
+        "'RubyPrefetcher' enables the Ruby stream prefetcher."
+    ),
+)
+parser.add_argument(
+    "--l1d-hwp-type",
+    default=None,
+    choices=_HWP_CHOICES,
+    help=(
+        "Classic only: L1 data-cache prefetcher "
+        f"({HWP_NONE} disables; unset keeps the cache default)."
+    ),
+)
+parser.add_argument(
+    "--l1i-hwp-type",
+    default=None,
+    choices=_HWP_CHOICES,
+    help="Classic only: L1 instruction-cache prefetcher.",
+)
+parser.add_argument(
+    "--l2-hwp-type",
+    default=None,
+    choices=_HWP_CHOICES,
+    help="Classic only: L2 prefetcher.",
+)
 args = parser.parse_args()
 
-cache_hierarchy = MESITwoLevelCacheHierarchy(
-    l1d_size="32KiB",
-    l1d_assoc=8,
-    l1i_size="32KiB",
-    l1i_assoc=8,
-    l2_size="256KiB",
-    l2_assoc=16,
-    num_l2_banks=2,
+if args.mem_system == "classic":
+    if args.prefetcher_type != PREFETCHER_NONE:
+        parser.error(
+            "--prefetcher-type is only valid with --mem-system ruby; "
+            "use --l1d-hwp-type / --l1i-hwp-type / --l2-hwp-type with classic"
+        )
+else:
+    for opt_name in ("l1d_hwp_type", "l1i_hwp_type", "l2_hwp_type"):
+        if getattr(args, opt_name) is not None:
+            parser.error(
+                f"--{opt_name.replace('_', '-')} is only valid with "
+                "--mem-system classic; use --prefetcher-type with ruby"
+            )
+
+coherence_protocol_required = None
+if args.mem_system == "ruby":
+    coherence_protocol_required = CoherenceProtocol.MESI_TWO_LEVEL
+
+requires(
+    coherence_protocol_required=coherence_protocol_required,
+    kvm_required=True,
 )
-# Memory: Dual Channel DDR4 2400 DRAM device.
-# The X86 board only supports 3 GiB of main memory.
+
+
+def _apply_classic_hwp(caches, hwp_type):
+    if hwp_type is None:
+        return
+    if hwp_type == HWP_NONE:
+        for cache in caches:
+            cache.prefetcher = NULL
+    else:
+        hwp_class = hwp_list.get(hwp_type)
+        for cache in caches:
+            cache.prefetcher = hwp_class()
+
+
+if args.mem_system == "classic":
+    from gem5.components.cachehierarchies.classic.private_l1_shared_l2_walk_cache_hierarchy import (
+        PrivateL1SharedL2WalkCacheHierarchy,
+    )
+
+    cache_hierarchy = PrivateL1SharedL2WalkCacheHierarchy(
+        l1d_size=_L1D_SIZE,
+        l1i_size=_L1I_SIZE,
+        l2_size=_L2_SIZE,
+        l1d_assoc=_L1_ASSOC,
+        l1i_assoc=_L1_ASSOC,
+        l2_assoc=_L2_ASSOC,
+    )
+else:
+    from gem5.components.cachehierarchies.ruby.mesi_two_level_cache_hierarchy import (
+        MESITwoLevelCacheHierarchy,
+    )
+
+    cache_hierarchy = MESITwoLevelCacheHierarchy(
+        l1d_size=_L1D_SIZE,
+        l1d_assoc=_L1_ASSOC,
+        l1i_size=_L1I_SIZE,
+        l1i_assoc=_L1_ASSOC,
+        l2_size=_L2_SIZE,
+        l2_assoc=_L2_ASSOC,
+        num_l2_banks=_NUM_L2_BANKS,
+    )
 
 memory = DualChannelDDR4_2400(size="3GiB")
 
-# Boot on KVM for speed, then switch to the Timing CPU at the start
-# of the ROI for cycle-accurate stats.
 processor = SimpleSwitchableProcessor(
     starting_core_type=CPUTypes.KVM,
-    switch_core_type=CPUTypes.TIMING,
+    switch_core_type=CPUTypes.O3,
     isa=ISA.X86,
     num_cores=1,
 )
 
-# KVM CPU's default mode opens a Linux perf_event fd, which fails with
-# EACCES on hosts where /proc/sys/kernel/perf_event_paranoid is >= 2 (the
-# kernel 4.6+ default). We don't need host perf counters during the KVM
-# boot phase because the actual measurement happens on the Timing CPU
-# after WORKBEGIN, so disable usePerf on the starting (KVM) cores.
 for proc in processor.start:
     proc.core.usePerf = False
 
-# Here we setup the board. The X86Board allows for Full-System X86 simulations
+_stochsuite_home = os.environ.get(
+    "STOCHSUITE_HOME",
+    os.path.join(os.path.dirname(__file__), "../stochsuite"),
+)
+_stripped_binary = os.path.join(
+    _stochsuite_home, "apps", f"{args.benchmark}.stripped"
+)
+
+cond_bp_class = conditional_bp_list.get(args.bp_type)
+for switch_core in processor._switchable_cores[processor._switch_key]:
+    bp = BranchPredictor(
+        conditionalBranchPred=cond_bp_class(numThreads=1),
+        instShiftAmt=0,
+        speculativeHistUpdate=False,
+    )
+    switch_core.core.branchPred = bp
+    switch_core.core.stoch_branch_monitor = StochBranchMonitor(
+        binary=_stripped_binary, bpred=bp
+    )
 
 board = X86Board(
     clk_freq="3GHz",
@@ -145,13 +337,7 @@ board = X86Board(
     memory=memory,
     cache_hierarchy=cache_hierarchy,
 )
-# Here we set up the board. The prebuilt X86DemoBoard allows for for FS mode
-# (full system) or SE mode (syscall emulation) X86 simulation.
 
-# Under KVM, GNU libc may pick AVX/VEX IFUNC paths for libc helpers (and for
-# some libm entry points). Gem5 Timing frequently treats VEX-encoded insns as
-# UD → SIGILL. Ask glibc for conservative hwcaps where supported (comma list;
-# tunables docs: Hardware Capability Tunables).
 _guest_glibc_hwcaps = (
     "export GLIBC_TUNABLES=glibc.cpu.hwcaps="
     "-AVX512F,-AVX512VL,-AVX512DQ,-AVX512BW,-AVX512IFMA,-AVX512VBMI,"
@@ -169,17 +355,6 @@ guest_cmd = _guest_glibc_hwcaps + (
     "m5 exit"
 )
 
-test_cmd = (
-    "set -x; "
-    "echo TEST_START; "
-    "ls -la /home/gem5/stochsuite; "
-    "file /home/gem5/stochsuite/pi_gem5 2>&1 || true; "
-    "sync; "
-    "echo TEST_END; "
-    "sleep 1; "
-    "m5 exit; "
-)
-
 board.set_kernel_disk_workload(
     kernel=obtain_resource(args.kernel),
     disk_image=DiskImageResource(
@@ -191,22 +366,29 @@ board.set_kernel_disk_workload(
     exit_on_work_items=True,
 )
 
+if args.mem_system == "classic":
+    _apply_classic_hwp(cache_hierarchy.l1dcaches, args.l1d_hwp_type)
+    _apply_classic_hwp(cache_hierarchy.l1icaches, args.l1i_hwp_type)
+    _apply_classic_hwp([cache_hierarchy.l2cache], args.l2_hwp_type)
+elif args.prefetcher_type != PREFETCHER_NONE:
+    pf_class = ruby_prefetcher_list.get(args.prefetcher_type)
+    cache_line_size = board.get_cache_line_size()
+    for l1 in cache_hierarchy._l1_controllers:
+        l1.prefetcher = pf_class(block_size=cache_line_size)
+        l1.enable_prefetch = True
 
-# Switch from KVM to O3 at WORKBEGIN, reset stats so the stats dump
-# at WORKEND reflects only the ROI.
+
 def workbegin_handler():
-    print("WorkBegin: entering ROI, switching to Timing CPU")
+    print("WorkBegin: entering ROI, switching to O3 CPU")
     board.get_processor().switch()
     m5.stats.reset()
     yield False
 
 
-# Dump stats at WORKEND and keep the simulation running so the binary
-# can finish its trailing prints and call `m5 exit` cleanly.
 def workend_handler():
     m5.stats.dump()
-    print("WorkEnd: stats dumped")
-    yield False
+    print("WorkEnd: stats dumped, exiting")
+    yield True
 
 
 simulator = Simulator(
@@ -217,5 +399,17 @@ simulator = Simulator(
     },
 )
 
-print(f"Running stochsuite/{args.benchmark} with iters={args.iters}")
+_prefetch_summary = args.prefetcher_type
+if args.mem_system == "classic":
+    _prefetch_summary = (
+        f"l1d={args.l1d_hwp_type or 'default'}, "
+        f"l1i={args.l1i_hwp_type or 'default'}, "
+        f"l2={args.l2_hwp_type or 'default'}"
+    )
+
+print(
+    f"Running stochsuite/{args.benchmark} with iters={args.iters}, "
+    f"mem-system={args.mem_system}, bp-type={args.bp_type}, "
+    f"prefetch={_prefetch_summary}"
+)
 simulator.run()

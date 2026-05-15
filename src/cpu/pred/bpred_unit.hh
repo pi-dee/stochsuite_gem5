@@ -507,6 +507,12 @@ class BPredUnit : public SimObject
     /** Miss-predicted branches */
     probing::PMUUPtr ppMisses;
 
+    /** Branch PC probe — fires with the instruction address on every prediction */
+    ProbePointArg<Addr> *ppBranchAddrPC;
+
+    /** Miss-PC probe — fires with the instruction address on every mispredict */
+    ProbePointArg<Addr> *ppMissAddrPC;
+
     /** @} */
 };
 
