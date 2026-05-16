@@ -1,9 +1,10 @@
 """
 Full-system gem5 driver for Stochsuite workloads.
 
-Boots Ubuntu 24.04 with a KVM CPU, then switches to the O3 CPU at the
-start of the ROI (m5_work_begin_addr), resets stats, runs the benchmark,
-dumps stats at the end of the ROI (m5_work_end_addr), and exits cleanly.
+Boots Ubuntu 24.04 with a KVM CPU, switches to O3 at hypercall 2 (before
+the benchmark), resets stats in the HC2 handler (avoids sim_quantum delay on
+m5_work_begin), runs the benchmark on O3, dumps stats at m5_work_end_addr,
+and exits cleanly. m5_work_begin_addr is a log marker only.
 
 A StochBranchMonitor is attached to the O3 branch predictor so that
 per-stochastic-branch predict/mispredict statistics appear in stats.txt
@@ -15,7 +16,7 @@ Usage
 scons build/ALL/gem5.opt
 ./build/ALL/gem5.opt \
     configs/x86-fs-stochsuite-workloads.py \
-    --benchmark pi --iters 1000 \
+    --benchmark pi --iters 1000 --harden-prng --prng-select Taus88 \
     --disk-image /path/to/stochsuite-base.img
 
 ./build/ALL/gem5.opt \
@@ -50,10 +51,12 @@ from gem5.resources.resource import (
     obtain_resource,
 )
 from gem5.simulate.exit_event import ExitEvent
+from gem5.simulate.exit_handler import ExitHandler
 from gem5.simulate.simulator import Simulator
+from gem5.utils.override import overrides
 from gem5.utils.requires import requires
 from common.ObjectList import ObjectList
-from m5.objects import BranchPredictor, NULL
+from m5.objects import BranchPredictor, NULL, X86ISA
 from m5.objects.StochBranchMonitor import StochBranchMonitor
 
 conditional_bp_list = ObjectList(
@@ -134,9 +137,22 @@ parser.add_argument(
     help="Number of iterations passed to the workload's `-iters` flag.",
 )
 parser.add_argument(
-    "--rng",
+    "--harden-prng",
+    action="store_true",
+    dest="use_hwrng",
+    help="Enable gem5 RDRAND: app uses HWRNG; gem5 implements it via --prng-select.",
+)
+parser.add_argument(
+    "--prng-select",
+    type=str,
     default="Taus88",
-    help="RNG class name passed to the workload's `-rng` flag.",
+    help=(
+        "PRNG to use. With --harden-prng, selects the gem5 backend for RDRAND "
+        "when the app calls HWRNG. Without --harden-prng, passed to the app as "
+        "-rng (software PRNG). Options include: Taus88, Taus113, JKISS, "
+        "JKISS32, CONG, GLIBC_CRAND, DRAND48, MersenneTwister, KISS11, "
+        "PCGBasic, XorShift32, XorShift128, XorWow, XoShiRo128++."
+    ),
 )
 parser.add_argument(
     "--seed",
@@ -233,7 +249,22 @@ parser.add_argument(
     choices=_HWP_CHOICES,
     help="Classic only: L2 prefetcher.",
 )
+parser.add_argument(
+    "--hwrng-lat",
+    type=int,
+    default=1,
+    help="Latency for RDRAND operations. Unused if --harden-prng is not set.",
+)
+parser.add_argument(
+    "--rdseed-lat", type=int, default=1, help="Latency for RDSEED operations"
+)
 args = parser.parse_args()
+
+X86ISA.hwrng_type = args.prng_select
+
+app_rng_opt = args.prng_select
+if args.use_hwrng:
+    app_rng_opt = "HWRNG"
 
 if args.mem_system == "classic":
     if args.prefetcher_type != PREFETCHER_NONE:
@@ -272,11 +303,35 @@ def _apply_classic_hwp(caches, hwp_type):
 
 
 if args.mem_system == "classic":
+    from gem5.components.boards.abstract_board import AbstractBoard
     from gem5.components.cachehierarchies.classic.private_l1_shared_l2_walk_cache_hierarchy import (
         PrivateL1SharedL2WalkCacheHierarchy,
     )
 
-    cache_hierarchy = PrivateL1SharedL2WalkCacheHierarchy(
+    class StochsuiteClassicCacheHierarchy(PrivateL1SharedL2WalkCacheHierarchy):
+        def __init__(
+            self,
+            l1d_hwp_type,
+            l1i_hwp_type,
+            l2_hwp_type,
+            **kwargs,
+        ):
+            self._l1d_hwp_type = l1d_hwp_type
+            self._l1i_hwp_type = l1i_hwp_type
+            self._l2_hwp_type = l2_hwp_type
+            super().__init__(**kwargs)
+
+        @overrides(PrivateL1SharedL2WalkCacheHierarchy)
+        def incorporate_cache(self, board: AbstractBoard) -> None:
+            super().incorporate_cache(board)
+            _apply_classic_hwp(self.l1dcaches, self._l1d_hwp_type)
+            _apply_classic_hwp(self.l1icaches, self._l1i_hwp_type)
+            _apply_classic_hwp([self.l2cache], self._l2_hwp_type)
+
+    cache_hierarchy = StochsuiteClassicCacheHierarchy(
+        l1d_hwp_type=args.l1d_hwp_type,
+        l1i_hwp_type=args.l1i_hwp_type,
+        l2_hwp_type=args.l2_hwp_type,
         l1d_size=_L1D_SIZE,
         l1i_size=_L1I_SIZE,
         l2_size=_L2_SIZE,
@@ -285,11 +340,29 @@ if args.mem_system == "classic":
         l2_assoc=_L2_ASSOC,
     )
 else:
+    from gem5.components.boards.abstract_board import AbstractBoard
     from gem5.components.cachehierarchies.ruby.mesi_two_level_cache_hierarchy import (
         MESITwoLevelCacheHierarchy,
     )
 
-    cache_hierarchy = MESITwoLevelCacheHierarchy(
+    class StochsuiteRubyCacheHierarchy(MESITwoLevelCacheHierarchy):
+        def __init__(self, prefetcher_type, **kwargs):
+            self._prefetcher_type = prefetcher_type
+            super().__init__(**kwargs)
+
+        @overrides(MESITwoLevelCacheHierarchy)
+        def incorporate_cache(self, board: AbstractBoard) -> None:
+            super().incorporate_cache(board)
+            if self._prefetcher_type == PREFETCHER_NONE:
+                return
+            pf_class = ruby_prefetcher_list.get(self._prefetcher_type)
+            cache_line_size = board.get_cache_line_size()
+            for l1 in self._l1_controllers:
+                l1.prefetcher = pf_class(block_size=cache_line_size)
+                l1.enable_prefetch = True
+
+    cache_hierarchy = StochsuiteRubyCacheHierarchy(
+        prefetcher_type=args.prefetcher_type,
         l1d_size=_L1D_SIZE,
         l1d_assoc=_L1_ASSOC,
         l1i_size=_L1I_SIZE,
@@ -320,6 +393,7 @@ _stripped_binary = os.path.join(
 )
 
 cond_bp_class = conditional_bp_list.get(args.bp_type)
+print("Configuring HWRNG latency...")
 for switch_core in processor._switchable_cores[processor._switch_key]:
     bp = BranchPredictor(
         conditionalBranchPred=cond_bp_class(numThreads=1),
@@ -330,6 +404,24 @@ for switch_core in processor._switchable_cores[processor._switch_key]:
     switch_core.core.stoch_branch_monitor = StochBranchMonitor(
         binary=_stripped_binary, bpred=bp
     )
+    c = switch_core.core
+    if hasattr(c, "instQueues"):
+        for iq in c.instQueues:
+            if hasattr(iq, "fuPool"):
+                for fu in iq.fuPool.FUList:
+                    for op in fu.opList:
+                        if str(op.opClass) == "RdRand":
+                            print(
+                                f"Found RdRand OpClass in {fu.path()}. "
+                                f"Setting latency to {args.hwrng_lat}"
+                            )
+                            op.opLat = args.hwrng_lat
+                        elif str(op.opClass) == "RdSeed":
+                            print(
+                                f"Found RdSeed OpClass in {fu.path()}. "
+                                f"Setting latency to {args.rdseed_lat}"
+                            )
+                            op.opLat = args.rdseed_lat
 
 board = X86Board(
     clk_freq="3GHz",
@@ -344,11 +436,22 @@ _guest_glibc_hwcaps = (
     "-AVX2,-AVX,-FMA;"
 )
 
+# Pattern A: hypercall 2 immediately before the benchmark binary. Ubuntu 24.04
+# images may also issue HC2 from after_boot.sh (early switch); this readfile
+# HC2 resets stats right before the workload. Handler is idempotent on switch.
+_hypercall2_cmd = (
+    "if command -v gem5-bridge >/dev/null 2>&1; then gem5-bridge hypercall 2; "
+    "elif command -v m5 >/dev/null 2>&1; then m5 hypercall 2; "
+    "elif [ -x /sbin/m5 ]; then /sbin/m5 hypercall 2; "
+    "else echo WARNING: no gem5-bridge or m5; cannot trigger hypercall 2; fi; "
+)
+
 guest_cmd = _guest_glibc_hwcaps + (
     "echo TEST_START; "
     "sleep 2; "
-    f"/home/gem5/stochsuite/{args.benchmark}_gem5 "
-    f"-seed {args.seed} -iters {args.iters} -rng {args.rng}; "
+    + _hypercall2_cmd
+    + f"/home/gem5/stochsuite/{args.benchmark}_gem5 "
+    f"-seed {args.seed} -iters {args.iters} -rng {app_rng_opt}; "
     "sleep 2; "
     "echo TEST_END; "
     "sleep 2; "
@@ -366,22 +469,28 @@ board.set_kernel_disk_workload(
     exit_on_work_items=True,
 )
 
-if args.mem_system == "classic":
-    _apply_classic_hwp(cache_hierarchy.l1dcaches, args.l1d_hwp_type)
-    _apply_classic_hwp(cache_hierarchy.l1icaches, args.l1i_hwp_type)
-    _apply_classic_hwp([cache_hierarchy.l2cache], args.l2_hwp_type)
-elif args.prefetcher_type != PREFETCHER_NONE:
-    pf_class = ruby_prefetcher_list.get(args.prefetcher_type)
-    cache_line_size = board.get_cache_line_size()
-    for l1 in cache_hierarchy._l1_controllers:
-        l1.prefetcher = pf_class(block_size=cache_line_size)
-        l1.enable_prefetch = True
+
+class SwitchToO3AfterBootExitHandler(ExitHandler, hypercall_num=2):
+    """Switch KVM -> O3 and reset stats before the benchmark (Pattern A)."""
+
+    @overrides(ExitHandler)
+    def _process(self, simulator: "Simulator") -> None:
+        proc = simulator._board.get_processor()
+        if getattr(proc, "_current_is_start", True):
+            print("Hypercall 2: switching KVM -> O3 before benchmark")
+            simulator.switch_processor()
+        else:
+            print("Hypercall 2: already on O3, skipping switch")
+        print("Hypercall 2: resetting stats before benchmark")
+        m5.stats.reset()
+
+    @overrides(ExitHandler)
+    def _exit_simulation(self) -> bool:
+        return False
 
 
 def workbegin_handler():
-    print("WorkBegin: entering ROI, switching to O3 CPU")
-    board.get_processor().switch()
-    m5.stats.reset()
+    print("WorkBegin: ROI marker (stats reset at hypercall 2)")
     yield False
 
 
@@ -409,7 +518,8 @@ if args.mem_system == "classic":
 
 print(
     f"Running stochsuite/{args.benchmark} with iters={args.iters}, "
-    f"mem-system={args.mem_system}, bp-type={args.bp_type}, "
-    f"prefetch={_prefetch_summary}"
+    f"app-rng={app_rng_opt}, prng-select={args.prng_select}, "
+    f"harden-prng={args.use_hwrng}, mem-system={args.mem_system}, "
+    f"bp-type={args.bp_type}, prefetch={_prefetch_summary}"
 )
 simulator.run()
