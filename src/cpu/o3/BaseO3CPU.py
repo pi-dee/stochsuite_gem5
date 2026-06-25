@@ -217,6 +217,10 @@ class BaseO3CPU(BaseCPU):
         NULL, "Optional stochastic branch monitor for RNG-impacted branches"
     )
 
+    stoch_prefetch_monitor = Param.StochPrefetchMonitor(
+        NULL, "Optional stochastic L1D prefetch monitor for __stoch_mem_* sites"
+    )
+
     needsTSO = Param.Bool(False, "Enable TSO Memory model")
 
     recvRespThrottling = Param.Bool(

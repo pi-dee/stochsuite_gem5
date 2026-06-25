@@ -5,3 +5,7 @@ Import('*')
 SimObject('StochBranchMonitor.py', sim_objects=['StochBranchMonitor'])
 Source('stoch_branch_monitor.cc')
 DebugFlag('StochBranchMonitor')
+
+SimObject('StochPrefetchMonitor.py', sim_objects=['StochPrefetchMonitor'])
+Source('stoch_prefetch_monitor.cc')
+DebugFlag('StochPrefetchMonitor')

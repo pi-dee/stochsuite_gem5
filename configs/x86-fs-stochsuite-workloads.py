@@ -1,10 +1,16 @@
 """
 Full-system gem5 driver for Stochsuite workloads.
 
-Boots Ubuntu 24.04 with a KVM CPU, switches to O3 at hypercall 2 (before
-the benchmark), resets stats in the HC2 handler (avoids sim_quantum delay on
-m5_work_begin), runs the benchmark on O3, dumps stats at m5_work_end_addr,
-and exits cleanly. m5_work_begin_addr is a log marker only.
+Boots Ubuntu 24.04 on KVM. Workloads emit hypercall 10 (HC10) before the ROI
+and hypercall 11 (HC11) after, with NOP spins to absorb sim_quantum delay.
+HC10 switches KVM→O3 and resets stats; HC11 dumps stats and switches O3→KVM
+when --mem-system classic (default). With --mem-system ruby, HC11 stays on O3
+to avoid the MESI_Two_Level memWriteback FLUSH crash. m5_work_begin/end are
+log markers.
+
+Classic caches support gem5 hardware prefetchers (--l1d-hwp-type etc.) and
+StochPrefetchMonitor. Ruby has separate Ruby L1 prefetchers (--prefetcher-type)
+but not the classic Cache prefetcher types.
 
 A StochBranchMonitor is attached to the O3 branch predictor so that
 per-stochastic-branch predict/mispredict statistics appear in stats.txt
@@ -58,6 +64,7 @@ from gem5.utils.requires import requires
 from common.ObjectList import ObjectList
 from m5.objects import BranchPredictor, NULL, X86ISA
 from m5.objects.StochBranchMonitor import StochBranchMonitor
+from m5.objects.StochPrefetchMonitor import StochPrefetchMonitor
 
 conditional_bp_list = ObjectList(
     getattr(m5.objects, "ConditionalPredictor", None)
@@ -109,7 +116,7 @@ class ListRubyPrefetcher(argparse.Action):
         sys.exit(0)
 
 
-WORKLOADS = ["pi", "dop", "dropout", "multinomial", "photon", "tailwag"]
+WORKLOADS = ["pi", "dop", "dropout", "multinomial", "photon", "tailwag", "sgd"]
 DEFAULT_KERNEL = "x86-linux-kernel-6.8.0-52-generic"
 
 parser = argparse.ArgumentParser(
@@ -118,10 +125,11 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--mem-system",
     choices=("ruby", "classic"),
-    default="ruby",
+    default="classic",
     help=(
-        "Memory/cache model: 'ruby' (MESI two-level, default) or 'classic' "
-        "(private L1, shared L2, MMU walk caches; supports --l1d-hwp-type)."
+        "Memory/cache model: 'classic' (default; private L1, shared L2, "
+        "MMU walk caches; supports --l1d-hwp-type and StochPrefetchMonitor) "
+        "or 'ruby' (MESI two-level; supports --prefetcher-type)."
     ),
 )
 parser.add_argument(
@@ -289,6 +297,30 @@ requires(
     kvm_required=True,
 )
 
+_stochsuite_home = os.environ.get(
+    "STOCHSUITE_HOME",
+    os.path.join(os.path.dirname(__file__), "../stochsuite"),
+)
+if args.benchmark == "sgd":
+    _stripped_binary = os.path.join(
+        _stochsuite_home, "apps", "sgd", "sgd.stripped"
+    )
+else:
+    _stripped_binary = os.path.join(
+        _stochsuite_home, "apps", f"{args.benchmark}.stripped"
+    )
+
+
+def _attach_stoch_prefetch_monitors(board, cache_hierarchy, stripped_binary):
+    """Wire StochPrefetchMonitor during incorporate_cache (before m5.instantiate)."""
+    proc = board.get_processor()
+    switch_cores = proc._switchable_cores[proc._switch_key]
+    for idx, switch_core in enumerate(switch_cores):
+        switch_core.core.stoch_prefetch_monitor = StochPrefetchMonitor(
+            binary=stripped_binary,
+            dcache=cache_hierarchy.l1dcaches[idx],
+        )
+
 
 def _apply_classic_hwp(caches, hwp_type):
     if hwp_type is None:
@@ -314,11 +346,13 @@ if args.mem_system == "classic":
             l1d_hwp_type,
             l1i_hwp_type,
             l2_hwp_type,
+            stripped_binary,
             **kwargs,
         ):
             self._l1d_hwp_type = l1d_hwp_type
             self._l1i_hwp_type = l1i_hwp_type
             self._l2_hwp_type = l2_hwp_type
+            self._stripped_binary = stripped_binary
             super().__init__(**kwargs)
 
         @overrides(PrivateL1SharedL2WalkCacheHierarchy)
@@ -327,11 +361,15 @@ if args.mem_system == "classic":
             _apply_classic_hwp(self.l1dcaches, self._l1d_hwp_type)
             _apply_classic_hwp(self.l1icaches, self._l1i_hwp_type)
             _apply_classic_hwp([self.l2cache], self._l2_hwp_type)
+            _attach_stoch_prefetch_monitors(
+                board, self, self._stripped_binary
+            )
 
     cache_hierarchy = StochsuiteClassicCacheHierarchy(
         l1d_hwp_type=args.l1d_hwp_type,
         l1i_hwp_type=args.l1i_hwp_type,
         l2_hwp_type=args.l2_hwp_type,
+        stripped_binary=_stripped_binary,
         l1d_size=_L1D_SIZE,
         l1i_size=_L1I_SIZE,
         l2_size=_L2_SIZE,
@@ -384,14 +422,6 @@ processor = SimpleSwitchableProcessor(
 for proc in processor.start:
     proc.core.usePerf = False
 
-_stochsuite_home = os.environ.get(
-    "STOCHSUITE_HOME",
-    os.path.join(os.path.dirname(__file__), "../stochsuite"),
-)
-_stripped_binary = os.path.join(
-    _stochsuite_home, "apps", f"{args.benchmark}.stripped"
-)
-
 cond_bp_class = conditional_bp_list.get(args.bp_type)
 print("Configuring HWRNG latency...")
 for switch_core in processor._switchable_cores[processor._switch_key]:
@@ -430,6 +460,19 @@ board = X86Board(
     cache_hierarchy=cache_hierarchy,
 )
 
+if args.mem_system != "classic":
+    print(
+        "StochPrefetchMonitor: skipped — dcache not accessible for "
+        f"mem-system '{args.mem_system}' (only 'classic' is supported)"
+    )
+
+_benchmark_bin = f"/home/gem5/stochsuite/{args.benchmark}_gem5"
+if args.benchmark == "sgd":
+    # sgd.cpp opens paths like "sgd/X_ent.txt" relative to cwd.
+    _benchmark_invocation = f"cd /home/gem5/stochsuite && {_benchmark_bin} "
+else:
+    _benchmark_invocation = f"{_benchmark_bin} "
+
 _guest_glibc_hwcaps = (
     "export GLIBC_TUNABLES=glibc.cpu.hwcaps="
     "-AVX512F,-AVX512VL,-AVX512DQ,-AVX512BW,-AVX512IFMA,-AVX512VBMI,"
@@ -450,8 +493,8 @@ guest_cmd = _guest_glibc_hwcaps + (
     "echo TEST_START; "
     "sleep 2; "
     + _hypercall2_cmd
-    + f"/home/gem5/stochsuite/{args.benchmark}_gem5 "
-    f"-seed {args.seed} -iters {args.iters} -rng {app_rng_opt}; "
+    + _benchmark_invocation
+    + f"-seed {args.seed} -iters {args.iters} -rng {app_rng_opt}; "
     "sleep 2; "
     "echo TEST_END; "
     "sleep 2; "
@@ -470,18 +513,12 @@ board.set_kernel_disk_workload(
 )
 
 
-class SwitchToO3AfterBootExitHandler(ExitHandler, hypercall_num=2):
-    """Switch KVM -> O3 and reset stats before the benchmark (Pattern A)."""
+class HC2StatsResetHandler(ExitHandler, hypercall_num=2):
+    """Reset stats at boot time; CPU switch is deferred to HC10 in the workload."""
 
     @overrides(ExitHandler)
     def _process(self, simulator: "Simulator") -> None:
-        proc = simulator._board.get_processor()
-        if getattr(proc, "_current_is_start", True):
-            print("Hypercall 2: switching KVM -> O3 before benchmark")
-            simulator.switch_processor()
-        else:
-            print("Hypercall 2: already on O3, skipping switch")
-        print("Hypercall 2: resetting stats before benchmark")
+        print("Hypercall 2: resetting stats (CPU stays on KVM)")
         m5.stats.reset()
 
     @overrides(ExitHandler)
@@ -489,15 +526,58 @@ class SwitchToO3AfterBootExitHandler(ExitHandler, hypercall_num=2):
         return False
 
 
+class ROIBeginHandler(ExitHandler, hypercall_num=10):
+    """Switch KVM→O3 before each ROI iteration; reset stats."""
+
+    @overrides(ExitHandler)
+    def _process(self, simulator: "Simulator") -> None:
+        proc = simulator._board.get_processor()
+        if getattr(proc, "_current_is_start", True):
+            print("HC10: switching KVM -> O3 for ROI")
+            simulator.switch_processor()
+        else:
+            print("HC10: already on O3, skipping switch")
+        m5.stats.reset()
+
+    @overrides(ExitHandler)
+    def _exit_simulation(self) -> bool:
+        return False
+
+
+class ROIEndHandler(ExitHandler, hypercall_num=11):
+    """Dump stats after ROI; switch O3→KVM on classic, stay on O3 with ruby."""
+
+    @overrides(ExitHandler)
+    def _process(self, simulator: "Simulator") -> None:
+        m5.stats.dump()
+        proc = simulator._board.get_processor()
+        if args.mem_system == "classic":
+            if not getattr(proc, "_current_is_start", True):
+                print("HC11: switching O3 -> KVM after ROI")
+                simulator.switch_processor()
+            else:
+                print("HC11: already on KVM, skipping switch")
+        else:
+            print(
+                "HC11: stats dumped, staying on O3 "
+                "(ruby memWriteback FLUSH not supported)"
+            )
+
+    @overrides(ExitHandler)
+    def _exit_simulation(self) -> bool:
+        return False
+
+
 def workbegin_handler():
-    print("WorkBegin: ROI marker (stats reset at hypercall 2)")
-    yield False
+    while True:
+        print("WorkBegin: ROI marker")
+        yield False
 
 
 def workend_handler():
-    m5.stats.dump()
-    print("WorkEnd: stats dumped, exiting")
-    yield True
+    while True:
+        print("WorkEnd: ROI marker")
+        yield False
 
 
 simulator = Simulator(
